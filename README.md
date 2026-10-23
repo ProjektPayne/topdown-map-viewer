@@ -15,7 +15,7 @@ python tools/serve.py examples/catalog.json          # view the example maps in 
 python tools/bundle.py examples/catalog.json -o maps.html   # export them as one shareable file
 ```
 
-Inside the viewer: click a row or press the arrow keys to switch maps, drag to orbit, right-drag to pan, scroll to zoom. **Top view** and **3/4 view** reframe the camera, **Save PNG** saves what you see. Hover over anything with a label to read it. You can also drop a map or catalog `.json` file (plus the files it names) onto the page.
+Inside the viewer: click a row or press the arrow keys to switch maps, drag to orbit, right-drag to pan, scroll to zoom. **Top view** and **3/4 view** reframe the camera, **Save PNG** saves what you see. **Fog** turns on a distance haze (off by default, remembered per browser). Hover over anything with a label to read it. You can also drop a map or catalog `.json` file (plus the files it names) onto the page.
 
 ## The map format
 

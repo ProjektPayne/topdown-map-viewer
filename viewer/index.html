@@ -59,7 +59,7 @@
   </div>
   <div class="row" id="versionRow" hidden><label>Version <select id="version"></select></label></div>
   <div class="row" id="layerRow"></div>
-  <div class="row"><button id="bTop">Top view</button><button id="bPersp">3/4 view</button><button id="bPng" title="Save the current view as a PNG">Save PNG</button></div>
+  <div class="row"><button id="bTop">Top view</button><button id="bPersp">3/4 view</button><button id="bPng" title="Save the current view as a PNG">Save PNG</button><label title="Distance haze that fades the far edge of the map into the sky"><input type="checkbox" id="cFog"> Fog</label></div>
   <div class="legend" id="legend"></div>
   <div id="status"></div>
 </div>
@@ -335,6 +335,14 @@ function buildLegend(map) {
 
 // ---------- camera ----------
 let lastView = false;
+// Fog is off unless the viewer turns it on; the choice is remembered in this browser.
+let fog = null, fogOn = false;
+try { fogOn = localStorage.getItem('map-viewer-fog') === '1'; } catch {}
+$('cFog').checked = fogOn;
+$('cFog').onchange = () => {
+  fogOn = $('cFog').checked; scene.fog = fogOn ? fog : null;
+  try { localStorage.setItem('map-viewer-fog', fogOn ? '1' : '0'); } catch {}
+};
 function frame(top) {
   lastView = top;
   const box = new THREE.Box3();
@@ -350,7 +358,7 @@ function frame(top) {
   if (top) camera.position.set(c.x, span * 1.15, c.z + 0.01);
   else camera.position.set(c.x - span*0.35, span*0.62, c.z + span*0.8);
   camera.far = span * 8; camera.near = span / 500; camera.updateProjectionMatrix();
-  scene.fog = new THREE.Fog(scene.background, span * 1.5, span * 4);
+  fog = new THREE.Fog(scene.background, span * 1.5, span * 4); scene.fog = fogOn ? fog : null;
   sun.position.set(c.x - span*0.5, span*0.9, c.z + span*0.4); sun.target.position.set(c.x, 0, c.z);
   Object.assign(sun.shadow.camera, { left:-span*0.7, right:span*0.7, top:span*0.7, bottom:-span*0.7, near:0.1, far:span*3 });
   sun.shadow.camera.updateProjectionMatrix();
