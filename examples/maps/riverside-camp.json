@@ -1,0 +1,247 @@
+{
+ "format": "topdown-map/1",
+ "id": "riverside-camp",
+ "name": "Riverside Camp",
+ "units_per_meter": 100,
+ "bounds": [
+  -6000,
+  6000,
+  -4000,
+  4000
+ ],
+ "background": "#cfe3c8",
+ "palette": {
+  "water": {
+   "color": "#3d8fb8",
+   "label": "River"
+  },
+  "spawn": {
+   "color": "#ffcc33",
+   "label": "Spawn"
+  }
+ },
+ "areas": [
+  {
+   "polygon": [
+    [
+     -1500,
+     -2500
+    ],
+    [
+     1500,
+     -2500
+    ],
+    [
+     1500,
+     300
+    ],
+    [
+     -1500,
+     300
+    ]
+   ],
+   "style": "sand",
+   "label": "Camp clearing"
+  }
+ ],
+ "paths": [
+  {
+   "points": [
+    [
+     -6000,
+     2500
+    ],
+    [
+     -3000,
+     1800
+    ],
+    [
+     -500,
+     2600
+    ],
+    [
+     2000,
+     1500
+    ],
+    [
+     4500,
+     2200
+    ],
+    [
+     6000,
+     1600
+    ]
+   ],
+   "width": 1400,
+   "style": "water",
+   "layer": "water",
+   "label": "River"
+  },
+  {
+   "points": [
+    [
+     0,
+     -4000
+    ],
+    [
+     0,
+     -2500
+    ]
+   ],
+   "width": 400,
+   "style": "path",
+   "label": "Trail"
+  }
+ ],
+ "objects": [
+  {
+   "shape": "tree",
+   "pos": [
+    -4500,
+    -1500
+   ],
+   "scale": 1.1
+  },
+  {
+   "shape": "tree",
+   "pos": [
+    -4000,
+    600
+   ],
+   "scale": 1.1
+  },
+  {
+   "shape": "tree",
+   "pos": [
+    -2500,
+    -2600
+   ],
+   "scale": 1.1
+  },
+  {
+   "shape": "tree",
+   "pos": [
+    3500,
+    -2000
+   ],
+   "scale": 1.1
+  },
+  {
+   "shape": "tree",
+   "pos": [
+    4800,
+    300
+   ],
+   "scale": 1.1
+  },
+  {
+   "shape": "tree",
+   "pos": [
+    500,
+    -3200
+   ],
+   "scale": 1.1
+  },
+  {
+   "shape": "tree",
+   "pos": [
+    2600,
+    400
+   ],
+   "scale": 1.1
+  },
+  {
+   "shape": "tree",
+   "pos": [
+    -1200,
+    800
+   ],
+   "scale": 1.1
+  },
+  {
+   "shape": "box",
+   "pos": [
+    0,
+    -600,
+    0
+   ],
+   "size": [
+    900,
+    600,
+    320
+   ],
+   "style": "building",
+   "yaw": -10,
+   "label": "Ranger hut"
+  },
+  {
+   "shape": "box",
+   "pos": [
+    0,
+    -600,
+    320
+   ],
+   "size": [
+    1000,
+    700,
+    60
+   ],
+   "style": "roof",
+   "yaw": -10
+  },
+  {
+   "shape": "cone",
+   "pos": [
+    -1800,
+    -1200,
+    0
+   ],
+   "size": [
+    500,
+    500,
+    350
+   ],
+   "color": "#e67e22",
+   "label": "Tent"
+  },
+  {
+   "shape": "cylinder",
+   "pos": [
+    -900,
+    -1400,
+    0
+   ],
+   "size": [
+    180,
+    180,
+    40
+   ],
+   "style": "stone",
+   "label": "Fire pit"
+  }
+ ],
+ "markers": [
+  {
+   "pos": [
+    0,
+    -3600
+   ],
+   "style": "spawn",
+   "label": "Trailhead spawn"
+  },
+  {
+   "pos": [
+    2000,
+    900
+   ],
+   "shape": "arrow",
+   "yaw": 90,
+   "color": "#21c4d6",
+   "label": "Fishing spot"
+  }
+ ],
+ "stats": {
+  "water_m2": 168000,
+  "trees": 8
+ }
+}

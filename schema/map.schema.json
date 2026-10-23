@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ProjektPayne/topdown-map-viewer/schema/map.schema.json",
+  "title": "Top-down map",
+  "description": "One map for topdown-map-viewer. Plan coordinates: x east, y north, z up, in map units (units_per_meter of them make a metre). Yaw is degrees counter-clockwise from +x, seen from above. Every list is optional, so a map can start as a few polygons and grow.",
+  "type": "object",
+  "properties": {
+    "format": { "const": "topdown-map/1", "description": "Format version. Optional, but recommended." },
+    "id": { "type": "string" },
+    "name": { "type": "string", "description": "Shown in the status line and used as the PNG file name." },
+    "units_per_meter": { "type": "number", "exclusiveMinimum": 0, "default": 1, "description": "1 for metres, 100 for centimetres (Unreal), 3.28084 for feet." },
+    "bounds": { "$ref": "#/$defs/rect", "description": "The playable area. Drawn as ground (unless fill_bounds is false) and used to frame the camera." },
+    "fill_bounds": { "type": "boolean", "default": true },
+    "frame": { "$ref": "#/$defs/rect", "description": "What the camera frames, when it should differ from bounds." },
+    "background": { "$ref": "#/$defs/color", "default": "#bfd9ea" },
+    "palette": {
+      "type": "object",
+      "description": "Named styles that elements refer to with \"style\". A style with a label appears in the legend. Built-in styles: ground, grass, water, road, asphalt, path, sand, dirt, concrete, wood, stone, building, roof, hedge, tree, bush, rock, marker.",
+      "additionalProperties": {
+        "oneOf": [
+          { "$ref": "#/$defs/color" },
+          { "type": "object", "properties": { "color": { "$ref": "#/$defs/color" }, "label": { "type": "string" }, "opacity": { "type": "number", "minimum": 0, "maximum": 1 } }, "additionalProperties": false }
+        ]
+      }
+    },
+    "legend": {
+      "type": "array",
+      "description": "An explicit legend. When left out, the legend lists the used palette styles that have a label.",
+      "items": { "type": "object", "required": ["label"], "properties": { "label": { "type": "string" }, "color": { "$ref": "#/$defs/color" }, "style": { "type": "string" } } }
+    },
+    "layers": {
+      "type": "array",
+      "description": "Layers get a show/hide checkbox. Built-in layers (ground, water, roads, structures, props, markers) need no entry; list one here to rename it or hide it by default. Any other layer id an element uses gets a checkbox too.",
+      "items": {
+        "type": "object", "required": ["id"],
+        "properties": { "id": { "type": "string" }, "label": { "type": "string" }, "visible": { "type": "boolean", "default": true } },
+        "additionalProperties": false
+      }
+    },
+    "areas": {
+      "type": "array", "description": "Flat filled polygons: ground, water, fields, car parks. Later areas draw on top.",
+      "items": {
+        "type": "object", "required": ["polygon"],
+        "properties": {
+          "polygon": { "$ref": "#/$defs/ring" },
+          "holes": { "type": "array", "items": { "$ref": "#/$defs/ring" } },
+          "z": { "type": "number", "default": 0 },
+          "frame": { "type": "boolean", "default": true, "description": "Include in camera framing when the map has no bounds." },
+          "layer": { "type": "string", "description": "Default: water for style water, else ground." },
+          "style": { "type": "string" }, "color": { "$ref": "#/$defs/color" }, "opacity": { "type": "number" }, "label": { "type": "string" }
+        }
+      }
+    },
+    "paths": {
+      "type": "array", "description": "Lines with a width: roads, trails, rivers, fences seen from above.",
+      "items": {
+        "type": "object", "required": ["points"],
+        "properties": {
+          "points": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/xy" } },
+          "width": { "type": "number", "description": "Map units. Default: 4 metres." },
+          "closed": { "type": "boolean", "default": false },
+          "z": { "type": "number", "default": 0 },
+          "layer": { "type": "string", "default": "roads" },
+          "style": { "type": "string" }, "color": { "$ref": "#/$defs/color" }, "opacity": { "type": "number" }, "label": { "type": "string" }
+        }
+      }
+    },
+    "objects": {
+      "type": "array",
+      "description": "Stand-in shapes. box, cylinder, cone and sphere are scaled to size (layer structures). tree, bush and rock have a natural size and are drawn instanced, so thousands are fine (layer props).",
+      "items": {
+        "type": "object", "required": ["pos"],
+        "properties": {
+          "shape": { "enum": ["box", "cylinder", "cone", "sphere", "tree", "bush", "rock"], "default": "box" },
+          "pos": { "$ref": "#/$defs/xyz" },
+          "anchor": { "enum": ["base", "center"], "default": "base", "description": "Whether pos is the bottom centre or the middle of the shape." },
+          "size": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "[width along local x, depth along local y, height], map units. Default: one metre (solid shapes) or the natural size (foliage)." },
+          "scale": { "type": "number", "description": "Foliage only, when size is not given: multiplies the natural size." },
+          "yaw": { "type": "number", "default": 0 },
+          "pitch": { "type": "number", "default": 0, "description": "Degrees about local y; applied after roll, before yaw." },
+          "roll": { "type": "number", "default": 0, "description": "Degrees about local x; applied first." },
+          "layer": { "type": "string" },
+          "style": { "type": "string" }, "color": { "$ref": "#/$defs/color" }, "opacity": { "type": "number" }, "label": { "type": "string" }
+        }
+      }
+    },
+    "markers": {
+      "type": "array", "description": "Points of interest: spawns, pickups, objectives. Glowing, with a hover label.",
+      "items": {
+        "type": "object", "required": ["pos"],
+        "properties": {
+          "pos": { "$ref": "#/$defs/xyz" },
+          "shape": { "enum": ["pin", "arrow", "flag", "box"], "default": "pin", "description": "An arrow points along yaw." },
+          "size": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "box only: [x, y, height] in map units." },
+          "scale": { "type": "number", "default": 1 },
+          "yaw": { "type": "number", "default": 0 },
+          "layer": { "type": "string", "default": "markers" },
+          "style": { "type": "string" }, "color": { "$ref": "#/$defs/color" }, "label": { "type": "string" }
+        }
+      }
+    },
+    "meshes": {
+      "type": "array",
+      "description": "glTF files (.gltf or .glb, metres, +y up, north along -z unless north_axis says +z). They keep their own materials unless style or color is given. A glTF node whose extras has \"layer\" follows that layer's checkbox.",
+      "items": {
+        "type": "object", "required": ["url"],
+        "properties": {
+          "url": { "type": "string", "description": "Relative to this map file." },
+          "position": { "$ref": "#/$defs/xyz" },
+          "yaw": { "type": "number", "default": 0 },
+          "scale": { "type": "number", "default": 1 },
+          "north_axis": { "enum": ["-z", "+z"], "default": "-z" },
+          "layer": { "type": "string", "default": "ground" },
+          "frame": { "type": "boolean", "description": "Include in camera framing. Default: true on the ground and water layers." },
+          "cast_shadow": { "type": "boolean" },
+          "recolor": {
+            "type": "array",
+            "description": "Recolour parts of the mesh by node name: the first rule whose regular expression matches wins. The name is the nearest node with extras.layer, else the mesh node's own. With flag, a rule only applies where the glTF material's extras has that key set (for example materials an exporter could not read).",
+            "items": {
+              "type": "object", "required": ["match"],
+              "properties": { "match": { "type": "string" }, "flag": { "type": "string" }, "style": { "type": "string" }, "color": { "$ref": "#/$defs/color" }, "opacity": { "type": "number" } }
+            }
+          },
+          "style": { "type": "string" }, "color": { "$ref": "#/$defs/color" }, "opacity": { "type": "number" }, "label": { "type": "string" }
+        }
+      }
+    },
+    "stats": { "type": "object", "description": "Free-form numbers about the map. A catalog can copy them into its table." },
+    "meta": { "type": "object", "description": "Anything else; the viewer ignores it." }
+  },
+  "$defs": {
+    "xy": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+    "xyz": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 3, "description": "[x, y] or [x, y, z]; z defaults to 0" },
+    "ring": { "type": "array", "items": { "$ref": "#/$defs/xy" }, "minItems": 3 },
+    "rect": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4, "description": "[xmin, xmax, ymin, ymax]" },
+    "color": { "type": "string", "description": "Any CSS colour three.js understands, such as #2f7fa8 or steelblue." }
+  }
+}

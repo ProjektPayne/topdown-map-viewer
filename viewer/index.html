@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Map Viewer</title>
+<link rel="icon" href="data:,">
+<!-- topdown-map-viewer: a Three.js viewer for maps written in the generic map format (schema/map.schema.json).
+     Open it through tools/serve.py (a catalog or a plugin), as a one-file export from tools/bundle.py, or with
+     ?map=<url> / ?catalog=<url>. A map or catalog file can also be dropped on the page. -->
+<style>
+  :root { --panel:#ffffffee; --ink:#1d2a33; --muted:#5b6b75; --line:#d5dee4; --hi:#e8f3fb; --bad:#b4442c; --good:#2f7d3a; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; overflow:hidden; background:#bfd9ea; color:var(--ink); font:13px/1.35 system-ui,Segoe UI,sans-serif; }
+  #view { position:fixed; inset:0; display:block; width:100vw; height:100vh; }
+  #panel { position:fixed; left:12px; top:12px; width:390px; max-height:calc(100vh - 24px); display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  #panel.collapsed > :not(header) { display:none; }
+  header { display:flex; align-items:baseline; gap:8px; }
+  header h1 { font-size:15px; margin:0 0 2px; flex:1; }
+  #list { overflow:auto; min-height:40px; flex:1 1 auto; margin:0 -4px; padding:0 4px; }
+  .sub { color:var(--muted); margin-bottom:6px; }
+  table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; }
+  th,td { padding:3px 4px; text-align:right; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th:first-child,td:first-child { text-align:left; }
+  thead th { position:sticky; top:0; background:#fff; font-weight:600; color:var(--muted); font-size:11px; z-index:1; }
+  tr.group td { background:#eef3f6; font-weight:600; text-align:left; cursor:default; padding-top:6px; }
+  tr.group .note { font-weight:400; color:var(--muted); }
+  tr.entry { cursor:pointer; }
+  tr.entry:hover { background:#f3f7fa; }
+  tr.entry.sel { background:var(--hi); font-weight:600; }
+  td.name { max-width:190px; overflow:hidden; text-overflow:ellipsis; }
+  .tag { font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:3px; padding:0 3px; margin-left:4px; font-weight:400; }
+  .tag.warn { color:var(--bad); border-color:var(--bad); }
+  td.worst { color:var(--bad); } td.best { color:var(--good); }
+  .row { display:flex; flex-wrap:wrap; gap:4px 12px; margin:8px 0 2px; align-items:center; }
+  label { white-space:nowrap; cursor:pointer; }
+  button, select { font:inherit; padding:3px 8px; border:1px solid var(--line); border-radius:5px; background:#fff; cursor:pointer; }
+  .legend { display:flex; flex-wrap:wrap; gap:2px 10px; color:var(--muted); font-size:12px; margin-top:6px; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
+  #status { color:var(--muted); margin-top:6px; min-height:1.3em; }
+  #status.err { color:var(--bad); white-space:pre-wrap; }
+  #tip { position:fixed; pointer-events:none; background:#1d2a33e6; color:#fff; padding:3px 7px; border-radius:4px; font-size:12px; display:none; z-index:5; }
+  [hidden] { display:none !important; }
+  @media (max-width:520px) { #panel { width:calc(100vw - 24px); max-height:50vh; } }
+</style>
+<script src="vendor/three-r181.min.js"></script>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="tip"></div>
+<div id="panel">
+  <header><h1 id="title">Maps</h1><button id="bCollapse" title="Hide or show the panel">–</button></header>
+  <div class="sub" id="help">Click a row or press ↑ ↓ to switch. Drag to orbit, right-drag to pan, scroll to zoom. Drop a map or catalog .json here to preview it.</div>
+  <div id="list">
+    <table>
+      <thead><tr id="cols"><th>Map</th></tr></thead>
+      <tbody id="maps"></tbody>
+    </table>
+  </div>
+  <div class="row" id="versionRow" hidden><label>Version <select id="version"></select></label></div>
+  <div class="row" id="layerRow"></div>
+  <div class="row"><button id="bTop">Top view</button><button id="bPersp">3/4 view</button><button id="bPng" title="Save the current view as a PNG">Save PNG</button></div>
+  <div class="legend" id="legend"></div>
+  <div id="status"></div>
+</div>
+<script type="module">
+const { THREE, OrbitControls, GLTFLoader } = window.MapViewerThree;
+const $ = id => document.getElementById(id);
+const status = (msg, err=false) => { $('status').textContent = msg; $('status').className = err ? 'err' : ''; };
+const params = new URLSearchParams(location.search);
+
+// ---------- files ----------
+// tools/bundle.py embeds the catalog and every file it references as gzip+base64 in #mv-bundle, keyed by path, so a
+// bundled page opens from a double-click with no server. Otherwise files are fetched relative to the file naming them.
+const bundleTag = document.getElementById('mv-bundle');
+const BUNDLE = bundleTag ? JSON.parse(bundleTag.textContent) : null;
+const BUNDLE_BASE = 'http://bundle.invalid/';
+let dropped = null;   // basename -> File, after files are dropped on the page
+
+function resolve(ref, base) {
+  if (BUNDLE) return decodeURIComponent(new URL(ref, BUNDLE_BASE + (base ?? '')).pathname.slice(1));
+  return new URL(ref, base ? new URL(base, location.href) : location.href).href;
+}
+async function bytesOf(url) {
+  if (dropped) {
+    const f = dropped.get(decodeURIComponent(url.split(/[/\\]/).pop()));
+    if (f) return new Uint8Array(await f.arrayBuffer());
+  }
+  if (BUNDLE) {
+    const b64 = BUNDLE.files[url];
+    if (b64 == null) return null;
+    const z = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    return new Uint8Array(await new Response(new Blob([z]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+  }
+  const r = await fetch(url, { cache:'no-store' });
+  return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+}
+async function loadJson(url) {
+  const b = await bytesOf(url);
+  if (!b) throw new Error(`${url} not found`);
+  return JSON.parse(new TextDecoder().decode(b));
+}
+const gltfLoader = new GLTFLoader();
+async function loadGltf(url) {
+  const b = await bytesOf(url);
+  if (!b) return null;
+  const dir = BUNDLE || dropped ? '' : url.replace(/[^/]*$/, '');
+  return new Promise(res => gltfLoader.parse(b.buffer, dir, g => res(g.scene), () => res(null)));
+}
+
+// ---------- renderer / scene ----------
+const canvas = $('view');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true, stencil:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.5, 4000);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true; controls.maxPolarAngle = 1.5;
+scene.add(new THREE.HemisphereLight(0xdfefff, 0x557744, 0.9));
+const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.05;
+scene.add(sun, sun.target);
+const root = new THREE.Group(); scene.add(root);
+
+// Map space: x east, y north, z up, in map units (units_per_meter of them to a metre); yaw is degrees counter-clockwise
+// from +x seen from above. Three.js space: metres, y up, north at -z.
+let K = 1;
+const P = (x, y, z=0) => new THREE.Vector3(x/K, z/K, -y/K);
+const rad = deg => (deg ?? 0) * Math.PI / 180;
+
+const DEFAULT_PALETTE = {
+  ground:'#7fb35c', grass:'#7fb35c', water:'#2f7fa8', road:'#b8875a', asphalt:'#5d5d5d', path:'#9c9384', sand:'#d9c58b',
+  dirt:'#8b6f4e', concrete:'#9a9a92', wood:'#8a6a45', stone:'#808080', building:'#d9d0b8', roof:'#5a3a2a', hedge:'#4f7d36',
+  tree:'#2f6b2a', bush:'#5d9a3b', rock:'#808080', marker:'#ffcc33', default:'#999999',
+};
+const DEFAULT_LAYERS = [
+  { id:'ground', label:'Ground' }, { id:'water', label:'Water' }, { id:'roads', label:'Roads' },
+  { id:'structures', label:'Structures' }, { id:'props', label:'Trees, bushes, rocks' }, { id:'markers', label:'Markers' },
+];
+let palette = {};
+const styleOf = s => { const v = palette[s] ?? DEFAULT_PALETTE[s]; return typeof v === 'string' ? { color:v } : (v ?? {}); };
+const colorOf = el => new THREE.Color(el.color ?? styleOf(el.style).color ?? DEFAULT_PALETTE.default);
+const opacityOf = el => el.opacity ?? styleOf(el.style).opacity ?? (el.style === 'water' ? 0.85 : 1);
+const usedStyles = new Set();
+function material(el, extra = {}) {
+  if (el.style) usedStyles.add(el.style);
+  const opacity = opacityOf(el);
+  return new THREE.MeshStandardMaterial({ color:colorOf(el), roughness: el.style === 'water' ? 0.15 : 0.95, flatShading:true,
+    side:THREE.DoubleSide, transparent: opacity < 1, opacity, ...extra });
+}
+
+// ---------- layers ----------
+const layerOn = {};   // layer id -> visible; kept while switching maps so a hidden layer stays hidden
+let layerDefs = [], layerObjs = {};
+function addTo(layer, obj, label) {
+  if (label) obj.userData.label = label;
+  (layerObjs[layer] ??= []).push(obj);
+  obj.visible = layerOn[layer] ?? true;
+  root.add(obj);
+  return obj;
+}
+function buildLayerToggles() {
+  const row = $('layerRow'); row.innerHTML = '';
+  const known = new Map(layerDefs.map(l => [l.id, l]));
+  for (const id of Object.keys(layerObjs)) if (!known.has(id)) known.set(id, { id, label:id });
+  for (const l of known.values()) {
+    if (!layerObjs[l.id]) continue;
+    const box = document.createElement('label');
+    box.innerHTML = `<input type="checkbox"> ${escapeHtml(l.label ?? l.id)}`;
+    const input = box.firstChild; input.checked = layerOn[l.id] ?? true;
+    input.onchange = () => { layerOn[l.id] = input.checked; for (const o of layerObjs[l.id]) o.visible = input.checked; };
+    row.append(box);
+  }
+}
+
+// ---------- drawing ----------
+function clearScene() {
+  root.traverse(o => { if (o.isMesh) { o.geometry.dispose(); [].concat(o.material).forEach(m => m.dispose()); } });
+  root.clear(); layerObjs = {}; usedStyles.clear();
+}
+let lift = 0, pathCount = 0, flats = 0;
+// Ground-level flats sit almost on top of each other; a growing polygon offset keeps later ones in front without z-fighting.
+const flatOffset = () => ({ polygonOffset:true, polygonOffsetFactor:-1, polygonOffsetUnits:-4 * ++flats });   // later areas and paths sit a hair higher so overlapping flats never flicker
+function addArea(a) {
+  const shape = new THREE.Shape(a.polygon.map(([x, y]) => new THREE.Vector2(x/K, y/K)));
+  for (const h of a.holes ?? []) shape.holes.push(new THREE.Path(h.map(([x, y]) => new THREE.Vector2(x/K, y/K))));
+  const g = new THREE.ShapeGeometry(shape); g.rotateX(-Math.PI/2);
+  const m = new THREE.Mesh(g, material(a, flatOffset()));
+  m.position.y = (a.z ?? 0)/K + (lift += 0.01); m.receiveShadow = true; m.userData.frame = a.frame ?? true;
+  addTo(a.layer ?? (a.style === 'water' ? 'water' : 'ground'), m, a.label);
+}
+function addPath(p) {
+  // Segments and joints overlap; the stencil draws each pixel of one path once, so see-through paths stay even.
+  const ref = (++pathCount % 255) + 1;
+  const mat = material(p, { ...flatOffset(), stencilWrite:true, stencilRef:ref, stencilFunc:THREE.NotEqualStencilFunc, stencilZPass:THREE.ReplaceStencilOp });
+  const w = (p.width ?? 4*K)/K, group = new THREE.Group(), y = (p.z ?? 0)/K + (lift += 0.01);
+  const pts = p.points.map(([x, yy]) => P(x, yy)), closed = p.closed && pts.length > 2;
+  if (closed) pts.push(pts[0]);
+  for (let k = 0; k < pts.length - 1; k++) {
+    const a = pts[k], b = pts[k+1], len = a.distanceTo(b);
+    if (len < 1e-4) continue;
+    const g = new THREE.PlaneGeometry(w, len); g.rotateX(-Math.PI/2);
+    const m = new THREE.Mesh(g, mat); m.position.copy(a).lerp(b, 0.5); m.position.y = y;
+    m.rotation.y = Math.atan2(b.x - a.x, b.z - a.z); m.receiveShadow = true; group.add(m);
+  }
+  for (const c of pts.slice(closed ? 0 : 1, closed ? -1 : -1)) {   // round joints so corners have no gaps
+    const j = new THREE.Mesh(new THREE.CircleGeometry(w/2, 16).rotateX(-Math.PI/2), mat); j.position.set(c.x, y, c.z); group.add(j);
+  }
+  addTo(p.layer ?? 'roads', group, p.label);
+}
+
+// Stand-in shapes. Solid shapes are unit-sized and scaled by `size`; foliage shapes have a natural size (metres) and are
+// drawn instanced, one InstancedMesh per shape/colour/layer.
+const SOLID = { box:() => new THREE.BoxGeometry(1, 1, 1), cylinder:() => new THREE.CylinderGeometry(0.5, 0.5, 1, 16),
+  cone:() => new THREE.ConeGeometry(0.5, 1, 16), sphere:() => new THREE.SphereGeometry(0.5, 16, 10) };
+const FOLIAGE = {
+  tree: { size:[3.2, 3.2, 7], geo:() => { const g = new THREE.ConeGeometry(1.6, 6, 7); g.translate(0, 4, 0);
+    const t = new THREE.CylinderGeometry(0.25, 0.3, 1.2, 6); t.translate(0, 0.6, 0); return [g, t]; } },
+  bush: { size:[2.2, 2.2, 1.5], geo:() => { const g = new THREE.IcosahedronGeometry(1.1, 1); g.scale(1, 0.68, 1); g.translate(0, 0.75, 0); return [g]; } },
+  rock: { size:[1.8, 1.8, 1.1], geo:() => { const g = new THREE.DodecahedronGeometry(0.9); g.scale(1, 0.6, 1); g.translate(0, 0.3, 0); return [g]; } },
+};
+const TRUNK = new THREE.Color('#6b4a2e');
+function addObjects(list) {
+  const batches = {};
+  for (const o of list) {
+    const shape = o.shape ?? 'box';
+    if (FOLIAGE[shape]) {
+      const key = `${shape}|${o.layer ?? 'props'}|${o.style ?? ''}|${o.color ?? ''}`;
+      (batches[key] ??= []).push(o); continue;
+    }
+    const size = (o.size ?? [K, K, K]).map(v => v/K);
+    const m = new THREE.Mesh((SOLID[shape] ?? SOLID.box)(), material({ style:'building', ...o }));
+    m.scale.set(size[0], size[2], size[1]);
+    m.position.copy(P(...o.pos));
+    if ((o.anchor ?? 'base') === 'base') m.position.y += size[2]/2;
+    m.rotation.set(rad(o.roll), rad(o.yaw), -rad(o.pitch), 'YZX');   // roll, then pitch, then yaw
+    m.castShadow = m.receiveShadow = true;
+    addTo(o.layer ?? 'structures', m, o.label);
+  }
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
+  for (const list of Object.values(batches)) {
+    const o0 = list[0], spec = FOLIAGE[o0.shape], el = { style:o0.shape, ...o0 };
+    const geos = spec.geo(), group = new THREE.Group();
+    geos.forEach((g, gi) => {
+      const mesh = new THREE.InstancedMesh(g, gi ? new THREE.MeshStandardMaterial({ color:TRUNK, flatShading:true }) : material(el), list.length);
+      list.forEach((o, i) => {
+        const sc = o.size ? o.size.map((v, k) => v/K/spec.size[k]) : [1, 1, 1].map(() => o.scale ?? 1);
+        q.setFromAxisAngle(up, rad(o.yaw)); s.set(sc[0], sc[2], sc[1]);
+        mesh.setMatrixAt(i, m4.compose(P(o.pos[0], o.pos[1], o.pos[2] ?? 0), q, s));
+      });
+      mesh.castShadow = mesh.receiveShadow = true;
+      mesh.userData.labels = list.map(o => o.label);
+      group.add(mesh);
+    });
+    addTo(o0.layer ?? 'props', group);
+  }
+}
+
+function addMarker(mk) {
+  const el = { style:'marker', ...mk }, s = mk.scale ?? 1, mat = material(el, { emissive:colorOf(el), emissiveIntensity:0.35 });
+  const shape = mk.shape ?? 'pin', g = new THREE.Group();
+  if (shape === 'arrow') {
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(0.7*s, 2*s, 12), mat); cone.rotation.z = -Math.PI/2; cone.position.y = 1.5*s; g.add(cone);
+  } else if (shape === 'box') {
+    const sz = (mk.size ?? [2*K, 1*K, 1*K]).map(v => v/K*s);
+    const b = new THREE.Mesh(new THREE.BoxGeometry(sz[0], sz[2], sz[1]), mat); b.position.y = sz[2]/2; g.add(b);
+  } else if (shape === 'flag') {
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06*s, 0.06*s, 4*s, 6), new THREE.MeshStandardMaterial({ color:0xdddddd }));
+    pole.position.y = 2*s; const flag = new THREE.Mesh(new THREE.PlaneGeometry(1.4*s, 0.9*s), mat); flag.position.set(0.7*s, 3.5*s, 0);
+    g.add(pole, flag);
+  } else {
+    const h = 2.2*s, pin = new THREE.Mesh(new THREE.CylinderGeometry(0.45*s, 0.45*s, h, 12), mat); pin.position.y = h/2; g.add(pin);
+  }
+  g.position.copy(P(mk.pos[0], mk.pos[1], mk.pos[2] ?? 0)); g.rotation.y = rad(mk.yaw);
+  g.traverse(o => { o.castShadow = true; if (o.isMesh) o.userData.label = mk.label; });
+  addTo(mk.layer ?? 'markers', g, mk.label);
+}
+
+// The name a recolor rule matches: the nearest node with a layer (a whole object in an exported scene), else the mesh's own.
+const nameOf = (o, top) => { for (let n = o; n && n !== top.parent; n = n.parent) if (n.userData.layer) return n.name; return o.name; };
+function addMesh(spec, scene3) {
+  const g = new THREE.Group(); g.add(scene3);
+  if ((spec.north_axis ?? '-z') === '+z') scene3.scale.z = -1;   // glTF exported with north along +z (mirrored)
+  g.position.copy(P(...(spec.position ?? [0, 0, 0]))); g.rotation.y = rad(spec.yaw);
+  g.scale.setScalar(spec.scale ?? 1);
+  const layer = spec.layer ?? 'ground';
+  scene3.traverse(o => {
+    if (o !== scene3 && o.userData.layer) { (layerObjs[o.userData.layer] ??= []).push(o); o.visible = layerOn[o.userData.layer] ?? true; }
+    if (!o.isMesh) return;
+    if (spec.color || spec.style) o.material = material({ style:spec.style, color:spec.color, opacity:spec.opacity });
+    const rule = (spec.recolor ?? []).find(r => new RegExp(r.match).test(nameOf(o, scene3)) && (!r.flag || o.material.userData?.[r.flag]));
+    if (rule) o.material = material({ style:rule.style, color:rule.color, opacity:rule.opacity });
+    o.receiveShadow = true; o.castShadow = spec.cast_shadow ?? (layer !== 'ground' && layer !== 'water');
+    if (spec.label) o.userData.label = spec.label;
+  });
+  g.userData.frame = spec.frame ?? (layer === 'ground' || layer === 'water');
+  addTo(layer, g, spec.label);
+}
+
+async function loadMap(map, base) {
+  const meshes = await Promise.all((map.meshes ?? []).map(async m => [m, await loadGltf(resolve(m.url, base))]));
+  return { map, meshes };
+}
+let frameBox = null;
+function render({ map, meshes }) {
+  clearScene(); lift = 0; flats = 0;
+  K = map.units_per_meter ?? 1;
+  palette = map.palette ?? {};
+  layerDefs = [...(map.layers ?? []), ...DEFAULT_LAYERS.filter(d => !(map.layers ?? []).some(l => l.id === d.id))];
+  for (const l of map.layers ?? []) if (l.visible === false && !(l.id in layerOn)) layerOn[l.id] = false;
+  const bg = new THREE.Color(map.background ?? '#bfd9ea'); scene.background = bg; document.body.style.background = '#' + bg.getHexString();
+  if (map.bounds && map.fill_bounds !== false) {
+    const [x0, x1, y0, y1] = map.bounds;
+    addArea({ polygon:[[x0, y0], [x1, y0], [x1, y1], [x0, y1]], style:'ground', layer:'ground', z:-0.02*K });
+  }
+  for (const a of map.areas ?? []) addArea(a);
+  for (const p of map.paths ?? []) addPath(p);
+  addObjects(map.objects ?? []);
+  for (const mk of map.markers ?? []) addMarker(mk);
+  let missing = 0;
+  for (const [spec, obj] of meshes) obj ? addMesh(spec, obj) : missing++;
+  frameBox = map.frame ?? map.bounds ?? null;
+  buildLayerToggles();
+  buildLegend(map);
+  frame(lastView);
+  let count = 0; root.traverse(o => { if (o.isInstancedMesh) count += o.count; else if (o.isMesh) count++; });
+  return { count, missing };
+}
+function buildLegend(map) {
+  const items = map.legend ?? [...usedStyles].map(s => ({ style:s, ...styleOf(s) })).filter(x => x.label);
+  $('legend').innerHTML = items.map(x => `<span><i class="sw" style="background:${new THREE.Color(x.color ?? styleOf(x.style).color ?? '#999').getStyle()}"></i>${escapeHtml(x.label)}</span>`).join('');
+}
+
+// ---------- camera ----------
+let lastView = false;
+function frame(top) {
+  lastView = top;
+  const box = new THREE.Box3();
+  if (frameBox) { const [x0, x1, y0, y1] = frameBox; box.expandByPoint(P(x0, y0)).expandByPoint(P(x1, y1)); }
+  else {
+    root.traverse(o => { if (o.userData.frame) box.expandByObject(o); });
+    if (box.isEmpty()) box.expandByObject(root);
+  }
+  if (box.isEmpty()) return;
+  const c = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
+  const span = Math.max(size.x, size.z, 10);
+  controls.target.set(c.x, 0, c.z);
+  if (top) camera.position.set(c.x, span * 1.15, c.z + 0.01);
+  else camera.position.set(c.x - span*0.35, span*0.62, c.z + span*0.8);
+  camera.far = span * 8; camera.near = span / 500; camera.updateProjectionMatrix();
+  scene.fog = new THREE.Fog(scene.background, span * 1.5, span * 4);
+  sun.position.set(c.x - span*0.5, span*0.9, c.z + span*0.4); sun.target.position.set(c.x, 0, c.z);
+  Object.assign(sun.shadow.camera, { left:-span*0.7, right:span*0.7, top:span*0.7, bottom:-span*0.7, near:0.1, far:span*3 });
+  sun.shadow.camera.updateProjectionMatrix();
+  controls.update();
+}
+$('bTop').onclick = () => frame(true);
+$('bPersp').onclick = () => frame(false);
+$('bCollapse').onclick = () => { $('panel').classList.toggle('collapsed'); $('bCollapse').textContent = $('panel').classList.contains('collapsed') ? '+' : '–'; };
+$('bPng').onclick = () => {
+  renderer.render(scene, camera);   // the drawing buffer is only valid in the same task as a render
+  canvas.toBlob(b => {
+    const a = document.createElement('a'), e = entries[current];
+    a.href = URL.createObjectURL(b); a.download = `${(e?.name ?? 'map').replace(/[^\w.-]+/g, '_')}.png`; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }, 'image/png');
+};
+
+// ---------- tooltip ----------
+const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
+let tipPending = false;
+canvas.addEventListener('pointermove', ev => {
+  if (tipPending) return; tipPending = true;
+  requestAnimationFrame(() => {
+    tipPending = false;
+    mouse.set(ev.clientX / innerWidth * 2 - 1, -(ev.clientY / innerHeight) * 2 + 1);
+    ray.setFromCamera(mouse, camera);
+    let label = null;
+    for (const hit of ray.intersectObject(root, true)) {
+      if (!visibleChain(hit.object)) continue;
+      label = hit.object.userData.labels?.[hit.instanceId] ?? labelOf(hit.object);
+      break;
+    }
+    const tip = $('tip');
+    if (label) { tip.textContent = label; tip.style.display = 'block'; tip.style.left = ev.clientX + 12 + 'px'; tip.style.top = ev.clientY + 12 + 'px'; }
+    else tip.style.display = 'none';
+  });
+});
+canvas.addEventListener('pointerleave', () => { $('tip').style.display = 'none'; });
+const visibleChain = o => { for (; o; o = o.parent) if (!o.visible) return false; return true; };
+const labelOf = o => { for (; o && o !== root; o = o.parent) if (o.userData.label) return o.userData.label; return null; };
+
+// ---------- catalog list ----------
+const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
+let catalog = null, catalogBase = null, entries = [], columns = [], current = -1, loadToken = 0;
+const versionPick = {};   // entry id -> chosen version label
+const FORMATS = {
+  percent:(x, c) => (x*100).toFixed(c.digits ?? 0) + '%',
+  number:(x, c) => x.toFixed(c.digits ?? 0) + (c.unit ? ' ' + c.unit : ''),
+};
+const fmt = (x, c) => typeof x === 'number' ? (FORMATS[c.format ?? 'number'] ?? FORMATS.number)(x, c) : escapeHtml(x);
+
+function buildList() {
+  $('title').textContent = catalog.title ?? 'Maps';
+  document.title = catalog.title ?? 'Map Viewer';
+  columns = catalog.columns ?? [];
+  $('cols').innerHTML = `<th>${escapeHtml(catalog.name_label ?? 'Map')}</th>` + columns.map(c => `<th title="${escapeHtml(c.title ?? '')}">${escapeHtml(c.label ?? c.key)}</th>`).join('');
+  const body = $('maps'); body.innerHTML = '';
+  const groups = new Map();
+  entries.forEach((e, i) => { const g = e.group ?? ''; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(i); });
+  for (const [name, idx] of groups) {
+    if (name || groups.size > 1) {
+      const note = catalog.groups?.[name]?.note;
+      const head = document.createElement('tr'); head.className = 'group';
+      head.innerHTML = `<td colspan="${columns.length + 1}">${escapeHtml(name || 'Other')}${note ? ` <span class="note">· ${escapeHtml(note)}</span>` : ''}</td>`;
+      body.append(head);
+    }
+    const ranges = Object.fromEntries(columns.map(c => {
+      const v = idx.map(i => entries[i].stats?.[c.key]).filter(x => typeof x === 'number');
+      return [c.key, [Math.min(...v), Math.max(...v)]];
+    }));
+    for (const i of idx) {
+      const e = entries[i], tr = document.createElement('tr'); tr.className = 'entry'; tr.dataset.i = i;
+      const tags = (e.tags ?? []).map(t => typeof t === 'string' ? { text:t } : t)
+        .map(t => `<span class="tag${t.warn ? ' warn' : ''}" title="${escapeHtml(t.title ?? '')}">${escapeHtml(t.text)}</span>`).join('');
+      tr.innerHTML = `<td class="name" title="${escapeHtml(e.title ?? e.file ?? '')}">${escapeHtml(e.name ?? e.id)}${tags}</td>` + columns.map(c => {
+        const x = e.stats?.[c.key]; if (x == null) return '<td>–</td>';
+        const [lo, hi] = ranges[c.key];
+        let cls = '';
+        if (c.better && lo !== hi && typeof x === 'number') cls = x === (c.better === 'low' ? lo : hi) ? 'best' : x === (c.better === 'low' ? hi : lo) ? 'worst' : '';
+        return `<td class="${cls}">${fmt(x, c)}</td>`;
+      }).join('');
+      tr.onclick = () => select(i);
+      body.append(tr);
+    }
+  }
+}
+
+// An entry can offer versions of the same map (say, a design and what was actually built): a picker switches them.
+const versionsOf = e => [{ label:e.version_label ?? 'Default', file:e.file, map:e.map, note:e.note, warn:e.warn }, ...(e.versions ?? [])];
+function pickVersion(e) {
+  const vs = versionsOf(e);
+  return vs.find(v => v.label === versionPick[e.id]) ?? vs.find(v => v.label === catalog.default_version) ?? vs[0];
+}
+$('version').onchange = () => { versionPick[entries[current].id] = $('version').value; const i = current; current = -1; select(i); };
+
+async function select(i) {
+  if (!entries[i] || i === current) return;
+  current = i;
+  document.querySelectorAll('tr.entry').forEach(tr => tr.classList.toggle('sel', +tr.dataset.i === i));
+  document.querySelector('tr.entry.sel')?.scrollIntoView({ block:'nearest' });
+  const e = entries[i], v = pickVersion(e), token = ++loadToken;
+  $('versionRow').hidden = !e.versions?.length;
+  if (e.versions?.length) $('version').innerHTML = versionsOf(e).map(x => `<option${x === v ? ' selected' : ''}>${escapeHtml(x.label)}</option>`).join('');
+  const where = [e.group, e.name ?? e.id].filter(Boolean).join(' · ');
+  status(`Loading ${where}…`);
+  try {
+    const url = v.file ? resolve(v.file, catalogBase) : null;
+    const map = v.map ?? await loadJson(url);
+    const loaded = await loadMap(map, url ?? catalogBase);
+    if (token !== loadToken) return;
+    const { count, missing } = render(loaded);
+    const parts = [where, `${count} objects`, missing ? `${missing} mesh file(s) missing` : '', v.note ?? e.note ?? '', catalog.note ?? ''];
+    status(parts.filter(Boolean).join(' · '), !!(missing || v.warn));
+    try { localStorage.setItem(storeKey(), e.id); } catch {}
+  } catch (err) {
+    status(`Could not load ${e.name ?? e.id}: ${err.message}`, true);
+  }
+}
+const storeKey = () => `map-viewer-last:${catalog?.title ?? ''}`;
+
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'SELECT' || !entries.length) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { e.preventDefault(); select((current + 1) % entries.length); }
+  if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { e.preventDefault(); select((current - 1 + entries.length) % entries.length); }
+});
+addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+async function openCatalog(cat, base, pick) {
+  catalog = cat; catalogBase = base; entries = cat.maps ?? []; current = -1;
+  if (!entries.length) { status('This catalog lists no maps.', true); return; }
+  buildList();
+  let last = pick;
+  try { last ??= localStorage.getItem(storeKey()); } catch {}
+  await select(Math.max(0, entries.findIndex(e => e.id === last)));
+}
+// A single map opens as a one-entry catalog.
+const asCatalog = (map, file) => ({ title:map.name ?? 'Map', maps:[{ id:map.id ?? map.name ?? 'map', name:map.name ?? 'Map', map:file ? undefined : map, file }] });
+
+// Drop a map or catalog (plus the map and mesh files it names) on the page; files are matched by name.
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', async e => {
+  e.preventDefault();
+  const files = [...e.dataTransfer.files];
+  dropped = new Map(files.map(f => [f.name, f]));
+  try {
+    const jsons = [];
+    for (const f of files.filter(f => /\.json$/i.test(f.name))) jsons.push([f, JSON.parse(await f.text())]);
+    const cat = jsons.find(([, j]) => Array.isArray(j.maps));
+    if (cat) await openCatalog(cat[1], '', null);
+    else if (jsons.length) await openCatalog({ title:'Dropped maps', maps:jsons.map(([f, j]) => ({ id:f.name, name:j.name ?? f.name, map:j })) }, '', null);
+    else status('Drop a map or catalog .json file.', true);
+  } catch (err) { status(`Could not read dropped file: ${err.message}`, true); }
+});
+
+(async () => {
+  try {
+    if (BUNDLE) return await openCatalog(BUNDLE.catalog, BUNDLE.catalog_path ?? '', params.get('select'));
+    const mapUrl = params.get('map'), catUrl = params.get('catalog');
+    if (mapUrl) { const url = resolve(mapUrl); const map = await loadJson(url); return await openCatalog(asCatalog(map, url), url, null); }
+    if (catUrl) { const url = resolve(catUrl); return await openCatalog(await loadJson(url), url, params.get('select')); }
+    status('No catalog given. Open this page through tools/serve.py, add ?catalog=<url> or ?map=<url>, or drop a map .json here.');
+  } catch (err) {
+    status(`Could not load: ${err.message}`, true);
+  }
+})();
+
+(function animate() { requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); })();
+</script>
+</body>
+</html>

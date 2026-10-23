@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ProjektPayne/topdown-map-viewer/schema/catalog.schema.json",
+  "title": "Map catalog",
+  "description": "The list of maps the viewer shows, grouped, with optional stat columns. File paths are relative to the catalog.",
+  "type": "object",
+  "required": ["maps"],
+  "properties": {
+    "title": { "type": "string" },
+    "name_label": { "type": "string", "default": "Map", "description": "Heading of the first column." },
+    "note": { "type": "string", "description": "Appended to the status line for every map." },
+    "default_version": { "type": "string", "description": "Version label to show first when an entry has it." },
+    "columns": {
+      "type": "array",
+      "items": {
+        "type": "object", "required": ["key"],
+        "properties": {
+          "key": { "type": "string", "description": "Key in each entry's stats." },
+          "label": { "type": "string" },
+          "title": { "type": "string", "description": "Header tooltip." },
+          "format": { "enum": ["number", "percent"], "default": "number" },
+          "digits": { "type": "integer", "minimum": 0, "default": 0 },
+          "unit": { "type": "string" },
+          "better": { "enum": ["low", "high"], "description": "Colour the best value in each group green and the worst red." }
+        }
+      }
+    },
+    "groups": {
+      "type": "object", "description": "Extra text per group name, shown dim in the group header.",
+      "additionalProperties": { "type": "object", "properties": { "note": { "type": "string" } } }
+    },
+    "maps": {
+      "type": "array",
+      "items": {
+        "type": "object", "required": ["id"],
+        "properties": {
+          "id": { "type": "string", "description": "Stable id: remembered between visits and usable as ?select=<id>." },
+          "name": { "type": "string" },
+          "group": { "type": "string" },
+          "title": { "type": "string", "description": "Tooltip on the name, such as the source path." },
+          "file": { "type": "string", "description": "Map file (map.schema.json). Give file or map." },
+          "map": { "$ref": "map.schema.json", "description": "The map inline instead of a file." },
+          "stats": { "type": "object" },
+          "tags": { "type": "array", "items": { "oneOf": [{ "type": "string" }, { "type": "object", "required": ["text"], "properties": { "text": { "type": "string" }, "title": { "type": "string" }, "warn": { "type": "boolean" } } }] } },
+          "note": { "type": "string" },
+          "warn": { "type": "boolean", "description": "Show the status line in red." },
+          "version_label": { "type": "string", "default": "Default", "description": "Picker label for file/map when versions are given." },
+          "versions": {
+            "type": "array", "description": "Other versions of the same map (for example a design and what was built). A picker switches between them.",
+            "items": {
+              "type": "object", "required": ["label"],
+              "properties": { "label": { "type": "string" }, "file": { "type": "string" }, "map": { "$ref": "map.schema.json" }, "note": { "type": "string" }, "warn": { "type": "boolean" } }
+            }
+          }
+        }
+      }
+    }
+  }
+}
